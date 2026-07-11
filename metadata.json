@@ -1,0 +1,8 @@
+{
+  "name": "Redevelopment Feasibility Calculator",
+  "description": "A real estate redevelopment feasibility calculator with Supabase integration to save and compare projects.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
