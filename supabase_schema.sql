@@ -124,11 +124,67 @@ create table if not exists public.feasibility_projects (
   interest_on_rent_and_stamp numeric default 0,
   interest_on_balance_construction numeric default 0,
   total_interest numeric default 0,
-  pbt numeric default 0
+  pbt numeric default 0,
+
+  -- SECTION 6 — NEW MODULE DETAILS & PLATFORM EXTENSIONS
+  project_type text default 'Residential',
+  units_count integer default 100,
+  project_duration integer default 24,
+
+  registration_cost numeric default 0.05,
+  legal_charges numeric default 0.02,
+
+  construction_breakdown_mode text default 'percentage',
+  civil_work_percent numeric default 30,
+  material_cost_percent numeric default 30,
+  labour_cost_percent numeric default 15,
+  mep_cost_percent numeric default 10,
+  finishing_cost_percent numeric default 10,
+  contingency_cost_percent numeric default 5,
+  civil_work_val numeric default 0,
+  material_cost_val numeric default 0,
+  labour_cost_val numeric default 0,
+  mep_cost_val numeric default 0,
+  finishing_cost_val numeric default 0,
+  contingency_cost_val numeric default 0,
+
+  rera_fees numeric default 0.05,
+  govt_approval_charges numeric default 0.20,
+  environmental_clearance numeric default 0.10,
+  fire_noc_charges numeric default 0.05,
+  other_statutory_costs numeric default 0.10,
+
+  sold_count integer default 15,
+  booked_count integer default 10,
+  sales_months_elapsed integer default 6,
+
+  market_rate_per_sqft numeric default 11500,
+  competitor_name_1 text default 'Skyline Residency',
+  competitor_rate_1 numeric default 12500,
+  competitor_dist_1 numeric default 0.5,
+  competitor_name_2 text default 'Aura Grand',
+  competitor_rate_2 numeric default 13000,
+  competitor_dist_2 numeric default 1.2,
+  demand_analysis text,
+  supply_analysis text default 'Moderate',
+  growth_potential_rating text default 'High',
+  growth_potential_reason text,
+
+  risk_construction text default 'Medium',
+  risk_construction_reason text,
+  risk_market text default 'Low',
+  risk_market_reason text,
+  risk_financial text default 'Medium',
+  risk_financial_reason text,
+  risk_legal text default 'Low',
+  risk_legal_reason text
 );
 
 -- Enable Row Level Security (RLS)
 alter table public.feasibility_projects enable row level security;
+
+-- Drop policy if exists first to prevent errors on re-running SQL
+drop policy if exists "Allow all operations for everyone" on public.feasibility_projects;
 
 -- Create an open policy for select, insert, update, delete for the preview
 create policy "Allow all operations for everyone"
@@ -151,3 +207,9 @@ create trigger set_updated_at
 before update on public.feasibility_projects
 for each row
 execute function public.handle_updated_at();
+
+-- Explicitly grant access to the table for API-level queries
+grant all on table public.feasibility_projects to anon;
+grant all on table public.feasibility_projects to authenticated;
+grant all on table public.feasibility_projects to service_role;
+

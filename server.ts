@@ -88,58 +88,107 @@ async function startServer() {
     }
   });
 
-  // Save a project (Insert or Update)
+  // Save a project (Insert or Update) with self-healing retry logic for missing/uncached columns
   app.post("/api/projects", async (req, res) => {
     try {
       const supabase = getSupabaseClient(req);
-      const { id, ...data } = req.body;
+      const { id, ...originalData } = req.body;
+      const data = { ...originalData };
 
       // Clean read-only/generated timestamps if empty
       if (data.created_at === null || data.created_at === undefined) delete data.created_at;
       if (data.updated_at === null || data.updated_at === undefined) delete data.updated_at;
 
       let result;
-      if (id) {
-        // Explicitly update by ID
-        const { data: updated, error } = await supabase
-          .from("feasibility_projects")
-          .update(data)
-          .eq("id", id)
-          .select();
+      let attempt = 0;
+      const maxAttempts = 200;
+      let lastError: any = null;
 
-        if (error) throw error;
-        result = updated;
-      } else {
-        // Fallback checks to prevent duplicate named projects and upsert seamlessly
-        const { data: existing, error: findError } = await supabase
-          .from("feasibility_projects")
-          .select("*")
-          .eq("project_name", data.project_name);
+      while (attempt < maxAttempts) {
+        try {
+          if (id) {
+            // Explicitly update by ID
+            const { data: updated, error } = await supabase
+              .from("feasibility_projects")
+              .update(data)
+              .eq("id", id)
+              .select();
 
-        if (!findError && existing && existing.length > 0) {
-          const existingRow = existing[0];
-          // Use ID if available in database, otherwise fall back to project_name
-          const identifierKey = existingRow.id ? "id" : "project_name";
-          const identifierVal = existingRow.id ? existingRow.id : data.project_name;
+            if (error) throw error;
+            result = updated;
+          } else {
+            // Fallback checks to prevent duplicate named projects and upsert seamlessly
+            const { data: existing, error: findError } = await supabase
+              .from("feasibility_projects")
+              .select("*")
+              .eq("project_name", data.project_name);
 
-          const { data: updated, error: updateErr } = await supabase
-            .from("feasibility_projects")
-            .update(data)
-            .eq(identifierKey, identifierVal)
-            .select();
+            if (!findError && existing && existing.length > 0) {
+              const existingRow = existing[0];
+              // Use ID if available in database, otherwise fall back to project_name
+              const identifierKey = existingRow.id ? "id" : "project_name";
+              const identifierVal = existingRow.id ? existingRow.id : data.project_name;
 
-          if (updateErr) throw updateErr;
-          result = updated;
-        } else {
-          // Plain insert
-          const { data: inserted, error: insertErr } = await supabase
-            .from("feasibility_projects")
-            .insert([data])
-            .select();
+              const { data: updated, error: updateErr } = await supabase
+                .from("feasibility_projects")
+                .update(data)
+                .eq(identifierKey, identifierVal)
+                .select();
 
-          if (insertErr) throw insertErr;
-          result = inserted;
+              if (updateErr) throw updateErr;
+              result = updated;
+            } else {
+              // Plain insert
+              const { data: inserted, error: insertErr } = await supabase
+                .from("feasibility_projects")
+                .insert([data])
+                .select();
+
+              if (insertErr) throw insertErr;
+              result = inserted;
+            }
+          }
+          // If we reached here, operation was successful
+          break;
+        } catch (error: any) {
+          lastError = error;
+          const errMsg = error.message || String(error);
+          console.warn(`Attempt ${attempt + 1} failed during Supabase save: ${errMsg}`);
+
+          // Look for patterns indicating a missing column or schema cache issue
+          let offendingCol: string | null = null;
+          
+          const m1 = errMsg.match(/Could not find the '([^']+)' column/i);
+          if (m1) offendingCol = m1[1];
+          
+          if (!offendingCol) {
+            const m2 = errMsg.match(/column "([^"]+)" of relation/i);
+            if (m2) offendingCol = m2[1];
+          }
+
+          if (!offendingCol) {
+            const m3 = errMsg.match(/column "([^"]+)" does not exist/i);
+            if (m3) offendingCol = m3[1];
+          }
+
+          if (!offendingCol) {
+            const m4 = errMsg.match(/column '([^']+)' does not exist/i);
+            if (m4) offendingCol = m4[1];
+          }
+
+          if (offendingCol && offendingCol in data) {
+            console.warn(`Removing offending column "${offendingCol}" from payload and retrying...`);
+            delete data[offendingCol];
+            attempt++;
+          } else {
+            // Unrecoverable error or we already removed the column
+            throw error;
+          }
         }
+      }
+
+      if (!result) {
+        throw lastError || new Error("Failed to save project to Supabase after filtering non-existent columns.");
       }
 
       res.json({ success: true, data: result ? result[0] : null });
@@ -319,25 +368,72 @@ CRITICAL INSTRUCTIONS:
       const ai = getGeminiClient();
 
       const systemInstruction = `You are a professional real estate market researcher.
-Your task is to generate a short, structured summary for the location specified by the user.
+Your task is to perform micro-market research for the location specified by the user and return a structured JSON object.
 
-You MUST cover these exact three sections in your response:
-1. Typical Sale Rates: Typical current selling rates for residential, commercial, and retail in this micro-market.
-2. General Demand Commentary: A summary of developer/buyer interest, supply-demand dynamics, and micro-market trends.
-3. Comparable Project Notes: Notable active or upcoming redevelopment or new construction projects in this area.
+The JSON output MUST follow this exact schema:
+{
+  "report": "Detailed narrative Markdown report covering 1) Typical Sale Rates for residential/commercial, 2) General Demand commentary, 3) Comparable Project Notes, and 4) Groundwater/infrastructure context. Keep standard disclaimer stating this is AI-generated indicative research.",
+  "structuredData": {
+    "market_rate_per_sqft": number (indicative average selling rate per sqft, e.g. 12500),
+    "competitor_name_1": "string (name of competitor project 1)",
+    "competitor_rate_1": number (rate per sqft of competitor project 1, e.g. 13000),
+    "competitor_dist_1": number (distance in km, e.g. 0.5),
+    "competitor_name_2": "string (name of competitor project 2)",
+    "competitor_rate_2": number (rate per sqft of competitor project 2, e.g. 14000),
+    "competitor_dist_2": number (distance in km, e.g. 1.2),
+    "demand_analysis": "string (short 1-2 sentence description of current demand profile)",
+    "supply_analysis": "string (one of 'Low', 'Moderate', 'High')",
+    "growth_potential_rating": "string (one of 'Low', 'Medium', 'High')",
+    "growth_potential_reason": "string (short 1 sentence reason for growth rating)"
+  }
+}
 
-Important guidelines:
-- Clearly label the output as "AI-generated indicative research with a disclaimer to confirm rates against current local sources" at either the top or bottom of the response.
-- Present realistic estimates grounded in search results.
-- Structure with clean Markdown headers, bullet points, and high readability.`;
+Use search grounding results to populate highly realistic estimates. All prices must be in Indian Rupees (INR). Do not output anything outside of the JSON schema.`;
 
       const response = await ai.models.generateContent({
         model: "gemini-3.5-flash",
-        contents: `Please perform micro-market research for: ${location}`,
+        contents: `Please perform micro-market research and fill the schema for the location: ${location}`,
         config: {
           systemInstruction,
           tools: [{ googleSearch: {} }],
           temperature: 0.3,
+          responseMimeType: "application/json",
+          responseSchema: {
+            type: "OBJECT",
+            properties: {
+              report: { type: "STRING" },
+              structuredData: {
+                type: "OBJECT",
+                properties: {
+                  market_rate_per_sqft: { type: "INTEGER" },
+                  competitor_name_1: { type: "STRING" },
+                  competitor_rate_1: { type: "INTEGER" },
+                  competitor_dist_1: { type: "NUMBER" },
+                  competitor_name_2: { type: "STRING" },
+                  competitor_rate_2: { type: "INTEGER" },
+                  competitor_dist_2: { type: "NUMBER" },
+                  demand_analysis: { type: "STRING" },
+                  supply_analysis: { type: "STRING" },
+                  growth_potential_rating: { type: "STRING" },
+                  growth_potential_reason: { type: "STRING" }
+                },
+                required: [
+                  "market_rate_per_sqft",
+                  "competitor_name_1",
+                  "competitor_rate_1",
+                  "competitor_dist_1",
+                  "competitor_name_2",
+                  "competitor_rate_2",
+                  "competitor_dist_2",
+                  "demand_analysis",
+                  "supply_analysis",
+                  "growth_potential_rating",
+                  "growth_potential_reason"
+                ]
+              }
+            },
+            required: ["report", "structuredData"]
+          }
         }
       });
 
@@ -348,7 +444,24 @@ Important guidelines:
         };
       }) || [];
 
-      res.json({ success: true, report: response.text, sources });
+      // Parse JSON response
+      let parsedResponse = { report: "", structuredData: {} };
+      try {
+        parsedResponse = JSON.parse(response.text || "{}");
+      } catch (parseErr) {
+        console.error("Failed to parse Gemini response text:", response.text);
+        parsedResponse = {
+          report: response.text || "Failed to generate report",
+          structuredData: {}
+        };
+      }
+
+      res.json({
+        success: true,
+        report: parsedResponse.report,
+        structuredData: parsedResponse.structuredData,
+        sources
+      });
     } catch (error: any) {
       console.error("Market research error:", error);
       res.status(500).json({ success: false, error: error.message || String(error) });
