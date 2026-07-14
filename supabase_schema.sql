@@ -177,7 +177,25 @@ create table if not exists public.feasibility_projects (
   risk_financial text default 'Medium',
   risk_financial_reason text,
   risk_legal text default 'Low',
-  risk_legal_reason text
+  risk_legal_reason text,
+
+  -- SIMPLE STEPPER INPUTS & DYNAMIC CALCULATIONS
+  basic_fsi_percent numeric default 0,
+  tdr_percent numeric default 0,
+  govt_approval_mode text default 'absolute',
+  govt_approval_percent numeric default 0,
+  govt_approval_cost_total numeric default 0,
+  construction_cost_per_sqft numeric default 0,
+  marketing_percent numeric default 0,
+  other_costs_total numeric default 0,
+  loan_amount_mode text default 'auto',
+  loan_amount numeric default 0,
+  loan_period_years numeric default 0,
+  interest_cost numeric default 0,
+  deductions_total numeric default 0,
+  net_plot_area numeric default 0,
+  total_fsi_percent numeric default 0,
+  buildable_area numeric default 0
 );
 
 -- Enable Row Level Security (RLS)
